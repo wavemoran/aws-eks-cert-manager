@@ -1,6 +1,9 @@
-rbac:
-  create: true
-installCRDs: true
+global:
+  rbac:
+    create: true
+crds:
+  enabled: true
+  keep: true
 serviceAccount:
   create: true
 securityContext:
@@ -13,7 +16,5 @@ prometheus:
     path: /metrics
     interval: 60s
     scrapeTimeout: 30s
-webhook:
-  enabled: true
 cainjector:
   enabled: true
