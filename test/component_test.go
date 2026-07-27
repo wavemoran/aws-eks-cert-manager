@@ -218,25 +218,40 @@ func verifyClusterIssuerStatus(t *testing.T, dynamicClient dynamic.Interface, is
 		Resource: "clusterissuers",
 	}
 
-	// Create the DNSEndpoint resource in the "default" namespace
-	letsencryptProd, err := dynamicClient.Resource(clusterIssuerGVR).Get(context.Background(), issuerName, metav1.GetOptions{})
-	assert.NoError(t, err)
-	assert.NotNil(t, letsencryptProd)
+	// The controller populates .status.conditions asynchronously after the
+	// ClusterIssuer is created (ACME issuers only become Ready after account
+	// registration), so poll for the Ready condition instead of asserting on
+	// a single immediate read. The deadline context bounds both the polling
+	// loop and each individual Kubernetes request.
+	const pollInterval = 5 * time.Second
+	const pollTimeout = 2 * time.Minute
 
-	conditions, found, err := unstructured.NestedSlice(letsencryptProd.Object, "status", "conditions")
-	assert.NoError(t, err, "error retrieving conditions from status")
-	assert.True(t, found, "conditions field not found in status")
-	assert.NotEmpty(t, conditions, "conditions slice is empty")
+	ctx, cancel := context.WithTimeout(context.Background(), pollTimeout)
+	defer cancel()
 
-	// Extract the first condition from the slice.
-	firstCondition, ok := conditions[0].(map[string]interface{})
-	assert.True(t, ok, "first condition is not a map[string]interface{}")
+	for {
+		clusterIssuer, err := dynamicClient.Resource(clusterIssuerGVR).Get(ctx, issuerName, metav1.GetOptions{})
+		if err == nil && clusterIssuer != nil {
+			conditions, found, nestedErr := unstructured.NestedSlice(clusterIssuer.Object, "status", "conditions")
+			if nestedErr == nil && found {
+				// Same readiness pattern as the Certificate check in TestBasic.
+				for _, condition := range conditions {
+					conditionMap, ok := condition.(map[string]interface{})
+					if !ok {
+						continue
+					}
+					if conditionMap["type"] == "Ready" && conditionMap["status"] == "True" {
+						return
+					}
+				}
+			}
+		}
 
-	// Use the unstructured helper to retrieve the 'status' field from the condition.
-	conditionStatus, found, err := unstructured.NestedString(firstCondition, "status")
-	assert.NoError(t, err, "error retrieving status from first condition")
-	assert.True(t, found, "status field not found in first condition")
-
-	// Assert that the condition status is "True".
-	assert.Equal(t, "True", conditionStatus)
+		select {
+		case <-ctx.Done():
+			assert.Fail(t, fmt.Sprintf("ClusterIssuer %q did not report a Ready=True condition within %s (last Get error: %v)", issuerName, pollTimeout, err))
+			return
+		case <-time.After(pollInterval):
+		}
+	}
 }
