@@ -1,9 +1,7 @@
 global:
   rbac:
     create: true
-crds:
-  enabled: true
-  keep: true
+installCRDs: true
 serviceAccount:
   create: true
 securityContext:
